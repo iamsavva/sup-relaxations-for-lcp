@@ -206,6 +206,29 @@ class ContactCart:
         diditwork(solution)
         INFO("-------------------")
 
+    def solve_sdp_convex_diff_decomposition(self):
+        def add_sdp_constraints(prog:MathematicalProgram, x:npt.NDArray, y:npt.NDArray):
+            # add SDP relaxation of constraint x^T y = 0
+            n = len(x)
+            p = x+y
+            q = x-y
+            P = prog.NewSymmetricContinuousVariables(n, "P")
+            Q = prog.NewSymmetricContinuousVariables(n, "Q")
+            prog.AddLinearConstraint( np.trace(P) - np.trace(Q) == 0)
+            P_mat = np.vstack((np.hstack((P, p.reshape((n,1)))), np.hstack((p, [1]))))
+            Q_mat = np.vstack((np.hstack((Q, q.reshape((n,1)))), np.hstack((q, [1]))))
+            prog.AddPositiveSemidefiniteConstraint( P_mat )
+            prog.AddPositiveSemidefiniteConstraint( Q_mat )
+
+            # add quadratic cost on P
+
+            
+            
+
+
+
+
+
 
 cart = ContactCart()
 cart.solve_with_ipopt()
