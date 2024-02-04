@@ -43,7 +43,7 @@ from util import (
 
 
 class ContactCart:
-    def __init__(self, N=10, h=0.1, m=1, x0=1, v0=-1, xt=2, vt=0, Qx=1, Qv=10, Ru=1, Rf=0) -> None:
+    def __init__(self, N=10, h=0.1, m=1, x0=1, v0=-1, xt=2, vt=0, Qx=1, Qv=0.01, Ru=0.01, Rf=0.0) -> None:
         assert x0 >= 0
         self.N = N
         self.h = h
@@ -88,7 +88,10 @@ class ContactCart:
         
         return prog,x,v,f,u
     
-    def solve_with_ipopt(self):
+    def get_lcp_violation(self, x:npt.NDArray, f:npt.NDArray):
+        return x[1:] * f
+    
+    def solve_with_ipopt(self)->T.Tuple[float, npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray]:
         prog,x,v,f,u = self.form_nonlinear_prog()
 
         timer = timeit()
@@ -97,8 +100,16 @@ class ContactCart:
         timer.dt("IPOPT")
         diditwork(solution)
         INFO("-------------------")
+        cost = solution.get_optimal_cost()
+        ev = np.vectorize(lambda a: a.Evaluate())
+        x_traj = ev(solution.GetSolution(x).reshape(self.N+1))
+        v_traj = ev(solution.GetSolution(v).reshape(self.N+1))
+        f_traj = solution.GetSolution(f)
+        u_traj = solution.GetSolution(u)
+        lcp_v_traj = self.get_lcp_violation(x_traj, f_traj)
+        return cost, x_traj, v_traj, f_traj, u_traj, lcp_v_traj
 
-    def solve_with_snopt(self):
+    def solve_with_snopt(self)->T.Tuple[float, npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray]:
         prog,x,v,f,u = self.form_nonlinear_prog()
         timer = timeit()
         solver = SnoptSolver()
@@ -106,8 +117,16 @@ class ContactCart:
         timer.dt("SNOPT")
         diditwork(solution)
         INFO("-------------------")
+        cost = solution.get_optimal_cost()
+        ev = np.vectorize(lambda a: a.Evaluate())
+        x_traj = ev(solution.GetSolution(x).reshape(self.N+1))
+        v_traj = ev(solution.GetSolution(v).reshape(self.N+1))
+        f_traj = solution.GetSolution(f)
+        u_traj = solution.GetSolution(u)
+        lcp_v_traj = self.get_lcp_violation(x_traj, f_traj)
+        return cost, x_traj, v_traj, f_traj, u_traj, lcp_v_traj
 
-    def solve_nonconvex_qcqp_sdp_relaxation(self):
+    def solve_nonconvex_qcqp_sdp_relaxation(self)->T.Tuple[float, npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray]:
         prog,x,v,f,u = self.form_nonlinear_prog()
         sdp_prog = MakeSemidefiniteRelaxation(prog)
         timer = timeit()
@@ -116,8 +135,18 @@ class ContactCart:
         timer.dt("nonconvex QCQP relaxaion with MOSEK")
         diditwork(solution)
         INFO("-------------------")
+        cost = solution.get_optimal_cost()
+        ev = np.vectorize(lambda a: a.Evaluate())
+        x_traj = ev(solution.GetSolution(x).reshape(self.N+1))
+        v_traj = ev(solution.GetSolution(v).reshape(self.N+1))
+        f_traj = solution.GetSolution(f)
+        u_traj = solution.GetSolution(u)
+        lcp_v_traj = self.get_lcp_violation(x_traj, f_traj)
+        return cost, x_traj, v_traj, f_traj, u_traj, lcp_v_traj
+
 
     def build_gcs(self)-> T.Tuple[GraphOfConvexSets, GraphOfConvexSets.Vertex, GraphOfConvexSets.Vertex]:
+        # x v u f
         gcs = GraphOfConvexSets()
         vertices = dict() # type: T.Dict[str, GraphOfConvexSets.Vertex]
         umax = 100
@@ -142,11 +171,13 @@ class ContactCart:
 
         for n in range(1, self.N):
             # in contact, position is 0, force is positive
+            # THIS IS WRONG, fix me
             vc_n = gcs.AddVertex(HPolyhedron.MakeBox([0, -vmax, -umax, 0],[0, vmax, umax, fmax]), "vc_"+str(n))
             vc_n.AddCost( (vc_n.x()-x_star).dot(cost_mat).dot(vc_n.x()-x_star) )
             vertices["vc_"+str(n)] = vc_n
             
             # no contact, position is positive, force is 0
+            # THIS IS WRONG, fix me
             vnc_n = gcs.AddVertex(HPolyhedron.MakeBox([0, -vmax, -umax, 0],[xmax, vmax, umax, 0]), "vnc_"+str(n))
             vnc_n.AddCost( (vnc_n.x()-x_star).dot(cost_mat).dot(vnc_n.x()-x_star) )
             vertices["vnc_"+str(n)] = vnc_n
@@ -183,7 +214,7 @@ class ContactCart:
         return gcs, v0, vN
 
 
-    def solve_cr_with_gcs(self):
+    def solve_cr_with_gcs(self)->float:
         gcs, v0, vN = self.build_gcs()
         options = GraphOfConvexSetsOptions()
         options.convex_relaxation = True
@@ -193,10 +224,24 @@ class ContactCart:
         timer.dt("GCS CR")
         diditwork(solution)
         INFO("-------------------")
+        return solution.get_optimal_cost()
 
 
+    def get_trajecories_from_edge_trajectory(self, solution:MathematicalProgramResult, edge_traj:npt.NDArray):
+        vertex_traj = []
+        for edge in edge_traj:
+            vertex_traj.append(solution.GetSolution(edge.u().x()))
+        vertex_traj.append(solution.GetSolution(edge_traj[-1].v().x()))
 
-    def solve_micp_with_gcs(self):
+        ev = np.vectorize(lambda a: a.Evaluate())
+        x_traj = np.array([x[0] for x in vertex_traj])
+        v_traj = np.array([x[1] for x in vertex_traj])
+        u_traj = np.array([x[2] for x in vertex_traj[:-1]])
+        f_traj = np.array([x[3] for x in vertex_traj[:-1]])
+        lcp_v_traj = self.get_lcp_violation(x_traj, f_traj)
+        return x_traj, v_traj, f_traj, u_traj, lcp_v_traj
+        
+    def solve_micp_with_gcs(self)->T.Tuple[float, npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray]:
         gcs, v0, vN = self.build_gcs()
         options = GraphOfConvexSetsOptions()
         options.convex_relaxation = False
@@ -205,33 +250,80 @@ class ContactCart:
         timer.dt("GCS MICP")
         diditwork(solution)
         INFO("-------------------")
+        edge_traj = gcs.GetSolutionPath(v0, vN, solution)
+        x_traj, v_traj, u_traj, f_traj, lcp_v_traj = self.get_trajecories_from_edge_trajectory(solution, edge_traj)
+        return solution.get_optimal_cost(), x_traj, v_traj, u_traj, f_traj, lcp_v_traj
 
-    def solve_sdp_convex_diff_decomposition(self):
-        def add_sdp_constraints(prog:MathematicalProgram, x:npt.NDArray, y:npt.NDArray):
+
+    def solve_qcqp_convex_diff_decomposition(self)->T.Tuple[float, npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray,npt.NDArray]:
+        def add_socp_constraint(prog:MathematicalProgram, x:npt.NDArray, y:npt.NDArray, cost:float, n):
             # add SDP relaxation of constraint x^T y = 0
-            n = len(x)
+            bar_p = prog.NewContinuousVariables(1, "bar_p"+str(n))[0]
+            bar_q = prog.NewContinuousVariables(1, "bar_q"+str(n))[0]
             p = x+y
             q = x-y
-            P = prog.NewSymmetricContinuousVariables(n, "P")
-            Q = prog.NewSymmetricContinuousVariables(n, "Q")
-            prog.AddLinearConstraint( np.trace(P) - np.trace(Q) == 0)
-            P_mat = np.vstack((np.hstack((P, p.reshape((n,1)))), np.hstack((p, [1]))))
-            Q_mat = np.vstack((np.hstack((Q, q.reshape((n,1)))), np.hstack((q, [1]))))
-            prog.AddPositiveSemidefiniteConstraint( P_mat )
-            prog.AddPositiveSemidefiniteConstraint( Q_mat )
+            prog.AddLorentzConeConstraint(np.hstack((bar_p, p)))
+            prog.AddLorentzConeConstraint(np.hstack((bar_q, q)))
+            prog.AddLinearConstraint(bar_p == bar_q)
+            prog.AddLinearConstraint(bar_p >= 0)
 
-            # add quadratic cost on P
+            cost_expr = cost * (bar_p**2 + bar_q**2)
+            prog.AddQuadraticCost(cost_expr)
+            return cost_expr
 
-            
-            
+        prog = MathematicalProgram()
+        x = np.hstack( ([self.x0], prog.NewContinuousVariables(self.N, "x")) )
+        v = np.hstack( ([self.v0], prog.NewContinuousVariables(self.N, "v")) )
+        f = prog.NewContinuousVariables(self.N, "f")
+        u = prog.NewContinuousVariables(self.N, "u")
 
+        # cost at 0 point for completeness
+        total_cost = Expression(0)
+        total_cost += self.Qx * (x[0]-self.xt)**2
+        total_cost += self.Qv * (v[0]-self.vt)**2
+        prog.AddQuadraticCost( total_cost )
 
+        adjusted_cost = Expression(0)
+        scaling_factor = 0.01
 
+        for n in range(self.N):
+            # constraints
+            prog.AddLinearConstraint(x[n+1] >= 0)
+            prog.AddLinearConstraint(f[n] >= 0)
+            prog.AddLinearConstraint(x[n+1] == x[n] + self.h * v[n+1])
+            prog.AddLinearConstraint(v[n+1] == v[n] + self.h/self.m * (u[n]+f[n]) )
 
+            adjusted_cost += add_socp_constraint(prog, x[n+1], f[n], scaling_factor, n)
 
+            # quadratic cost on each term
+            total_cost = Expression(0)
+            total_cost += self.Qx * (x[n+1]-self.xt)**2
+            total_cost += self.Qv * (v[n+1]-self.vt)**2
+            total_cost += self.Ru * (u[n]-0)**2
+            total_cost += self.Rf * (f[n]-0)**2
+            prog.AddQuadraticCost( total_cost )
+
+        timer = timeit()
+        solver = MosekSolver()
+        solution = solver.Solve(prog) # type: MathematicalProgramResult
+        timer.dt("convex")
+        diditwork(solution)
+        WARN(solution.get_optimal_cost() - solution.GetSolution(adjusted_cost))
+        INFO("-------------------")
+
+        cost = solution.get_optimal_cost()
+        ev = np.vectorize(lambda a: a.Evaluate())
+        x_traj = ev(solution.GetSolution(x).reshape(self.N+1))
+        v_traj = ev(solution.GetSolution(v).reshape(self.N+1))
+        f_traj = solution.GetSolution(f).reshape(self.N)
+        u_traj = solution.GetSolution(u).reshape(self.N)
+        lcp_v_traj = self.get_lcp_violation(x_traj, f_traj)
+        return cost, x_traj, v_traj, f_traj, u_traj, lcp_v_traj
+    
 
 cart = ContactCart()
 cart.solve_with_ipopt()
 cart.solve_nonconvex_qcqp_sdp_relaxation()
 cart.solve_cr_with_gcs()
 cart.solve_micp_with_gcs()
+cart.solve_qcqp_convex_diff_decomposition()
