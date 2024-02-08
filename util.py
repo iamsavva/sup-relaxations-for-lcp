@@ -17,15 +17,15 @@ from pydrake.solvers import (  # pylint: disable=import-error, no-name-in-module
     GurobiSolver,
 )
 
-from pydrake.geometry.optimization import ( # pylint: disable=import-error, no-name-in-module
+from pydrake.geometry.optimization import (  # pylint: disable=import-error, no-name-in-module
     HPolyhedron,
-)  
-from pydrake.symbolic import ( # pylint: disable=import-error, no-name-in-module, unused-import
+)
+from pydrake.symbolic import (  # pylint: disable=import-error, no-name-in-module, unused-import
     Polynomial,
     Variable,
     Variables,
     Expression,
-)  
+)
 from IPython.display import Markdown, display
 
 
