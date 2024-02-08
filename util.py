@@ -116,9 +116,9 @@ class timeit:
         self.totals = 0
         self.a_start = None
 
-    def dt(self, descriptor=None, print_stuff=True):
+    def dt(self, descriptor=None, verbose=True):
         self.times.append(time.time())
-        if print_stuff:
+        if verbose:
             if descriptor is None:
                 INFO("%.3fs since last time-check" % (self.times[-1] - self.times[-2]))
             else:
